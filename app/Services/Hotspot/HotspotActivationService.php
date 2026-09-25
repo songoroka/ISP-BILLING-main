@@ -1,0 +1,370 @@
+<?php
+
+namespace App\Services\Hotspot;
+
+use App\Http\Controllers\MikrotikController;
+use App\Models\HotspotActivationAttempt;
+use App\Models\HotspotPurchaseRequest;
+use App\Models\HotspotSale;
+use App\Models\HotspotVoucher;
+use App\Models\PackageList;
+use App\Models\RouterList;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
+use RuntimeException;
+use Throwable;
+
+class HotspotActivationService
+{
+    public function activate(HotspotPurchaseRequest $purchase): HotspotPurchaseRequest
+    {
+        $purchase = HotspotPurchaseRequest::findOrFail($purchase->id);
+
+        if ($purchase->activation_status === 'activated') {
+            return $purchase->fresh();
+        }
+
+        if ($purchase->payment_status !== 'paid') {
+            throw new RuntimeException(
+                'Hotspot activation cannot start before payment is verified.'
+            );
+        }
+
+        $router = RouterList::where('router_name', $purchase->router_name)->first();
+
+        if (! $router) {
+            return $this->markFailed(
+                $purchase,
+                'Router '.$purchase->router_name.' was not found.'
+            );
+        }
+
+        $package = PackageList::where('id', $purchase->package_id)
+            ->where(function ($query) use ($purchase) {
+                $query->where('router_name', $purchase->router_name)
+                    ->orWhereNull('router_name');
+            })
+            ->first();
+
+        if (! $package) {
+            return $this->markFailed(
+                $purchase,
+                'The selected package no longer exists for router '.$purchase->router_name.'.'
+            );
+        }
+
+        $profile = $this->getRouterProfile(
+            $router->router_name,
+            $package->package
+        );
+
+        if (! $profile) {
+            return $this->markFailed(
+                $purchase,
+                'Hotspot profile "'.$package->package.'" was not found on router '.$router->router_name.'.'
+            );
+        }
+
+        /*
+         * Hotspot validity is controlled by the Super Admin package
+         * configuration, not by the MikroTik profile session-timeout.
+         *
+         * This allows the same MikroTik profile to be reused while each
+         * package can have its own realtime validity.
+         */
+        $duration = $this->packageDuration($package);
+
+        if (($package->validity_type ?? null) !== 'realtime') {
+            return $this->markFailed(
+                $purchase,
+                'Package "'.$package->package.'" is not configured for realtime Hotspot validity.'
+            );
+        }
+
+        if (! $duration) {
+            return $this->markFailed(
+                $purchase,
+                'Package "'.$package->package.'" has no Hotspot validity duration configured.'
+            );
+        }
+
+        $attempt = $this->startAttempt($purchase);
+
+        try {
+            $purchase = DB::transaction(function () use (
+                $purchase,
+                $router,
+                $package,
+                $duration,
+                $attempt
+            ) {
+                $locked = HotspotPurchaseRequest::whereKey($purchase->id)
+                    ->lockForUpdate()
+                    ->firstOrFail();
+
+                if ($locked->activation_status === 'activated') {
+                    $attempt->update([
+                        'status' => 'completed',
+                        'completed_at' => now(),
+                        'response_payload' => [
+                            'message' => 'Already activated by another worker.',
+                        ],
+                    ]);
+
+                    return $locked;
+                }
+
+                $locked->update([
+                    'activation_status' => 'processing',
+                    'activation_started_at' => $locked->activation_started_at ?: now(),
+                    'activation_failed_at' => null,
+                    'activation_error' => null,
+                ]);
+
+                return $locked;
+            });
+
+            /*
+             * Keep the generated Hotspot credentials stable across retries.
+             */
+            $username = $purchase->hotspot_username ?: $this->makeUsername($purchase);
+            $password = $purchase->hotspot_password ?: Str::random(10);
+
+            if (! $purchase->hotspot_username || ! $purchase->hotspot_password) {
+                $purchase->update([
+                    'hotspot_username' => $username,
+                    'hotspot_password' => $password,
+                ]);
+            }
+
+            $comment = 'RT:'.$duration.' HSP:'.$purchase->merchant_reference;
+
+            $payload = [
+                'name' => $username,
+                'password' => $password,
+                'profile' => $package->package,
+                'mac-address' => strtoupper(trim($purchase->mac_address)),
+                'comment' => $comment,
+            ];
+
+            $attempt->update([
+                'request_payload' => [
+                    'router_name' => $router->router_name,
+                    'mac_address' => $purchase->mac_address,
+                    'package' => $package->package,
+                    'username' => $username,
+                    'profile' => $package->package,
+                    'validity_duration' => $duration,
+                ],
+            ]);
+
+            /*
+             * This is the only router operation.
+             * The existing controller handles the MikroTik connection.
+             */
+            $controller = app(MikrotikController::class);
+
+            $routerResponse = $controller->addHotspotUser(
+                $router->router_name,
+                $payload
+            );
+
+            /*
+             * Router accepted the user.
+             * Only now do we start the realtime timer.
+             */
+            $activatedAt = now();
+
+            $voucher = HotspotVoucher::updateOrCreate(
+                [
+                    'router_name' => $router->router_name,
+                    'username' => $username,
+                ],
+                [
+                    'code' => $username,
+                    'profile' => $package->package,
+                    'password' => $password,
+                    'price' => $purchase->amount,
+                    'status' => 'used',
+                    'used_by' => $username,
+                    'used_at' => $activatedAt,
+                    'created_by' => 1,
+                    'validity_type' => 'realtime',
+                    'validity_duration' => $duration,
+                    'first_login_at' => $activatedAt,
+                    'expires_at' => $this->calculateExpiry($activatedAt, $duration),
+                    'comment' => $comment,
+                ]
+            );
+
+            /*
+             * One HotspotSale per purchase.
+             * The merchant reference is used as the unique voucher_code.
+             */
+            $sale = HotspotSale::firstOrCreate(
+                [
+                    'router_name' => $router->router_name,
+                    'voucher_code' => $purchase->merchant_reference,
+                ],
+                [
+                    'profile' => $package->package,
+                    'username' => $username,
+                    'amount' => $purchase->amount,
+                    'payment_method' => $purchase->payment_gateway ?: 'mobilemoney',
+                    'note' => 'Captive portal purchase '.$purchase->merchant_reference,
+                    'sale_date' => $activatedAt->toDateString(),
+                    'sold_by' => null,
+                ]
+            );
+
+            /*
+             * Existing 10% platform-fee service.
+             * It is idempotent per HotspotSale.
+             */
+            app(\App\Services\SuperAdminPlatformFeeService::class)
+                ->recordForHotspotSale($sale);
+
+            $purchase->update([
+                'activation_status' => 'activated',
+                'activated_at' => $activatedAt,
+                'activation_failed_at' => null,
+                'activation_error' => null,
+                'hotspot_username' => $username,
+                'hotspot_password' => $password,
+            ]);
+
+            $attempt->update([
+                'status' => 'completed',
+                'completed_at' => now(),
+                'response_payload' => [
+                    'router_response' => $routerResponse,
+                    'username' => $username,
+                    'profile' => $package->package,
+                    'duration' => $duration,
+                    'activated_at' => $activatedAt->toIso8601String(),
+                    'hotspot_voucher_id' => $voucher->id,
+                    'hotspot_sale_id' => $sale->id,
+                ],
+            ]);
+
+            return $purchase->fresh();
+        } catch (Throwable $e) {
+            Log::error('Hotspot activation failed.', [
+                'purchase_id' => $purchase->id,
+                'merchant_reference' => $purchase->merchant_reference,
+                'router_name' => $purchase->router_name,
+                'mac_address' => $purchase->mac_address,
+                'error' => $e->getMessage(),
+            ]);
+
+            $attempt->update([
+                'status' => 'failed',
+                'completed_at' => now(),
+                'error_message' => $e->getMessage(),
+            ]);
+
+            return $this->markFailed($purchase, $e->getMessage());
+        }
+    }
+
+    private function getRouterProfile(string $routerName, string $profileName): ?array
+    {
+        $controller = app(MikrotikController::class);
+
+        $profiles = $controller->getHotspotUserProfiles($routerName);
+
+        return collect($profiles)
+            ->first(function (array $profile) use ($profileName) {
+                return (string) ($profile['name'] ?? '') === $profileName;
+            });
+    }
+
+    private function packageDuration(PackageList $package): ?string
+    {
+        $duration = trim((string) ($package->validity_duration ?? ''));
+
+        return $duration !== '' ? $duration : null;
+    }
+
+    private function calculateExpiry(\Illuminate\Support\Carbon $startedAt, string $duration): \Illuminate\Support\Carbon
+    {
+        $seconds = $this->durationToSeconds($duration);
+
+        if ($seconds <= 0) {
+            throw new RuntimeException(
+                'Invalid Hotspot package validity duration: '.$duration
+            );
+        }
+
+        return $startedAt->copy()->addSeconds($seconds);
+    }
+
+    private function durationToSeconds(string $duration): int
+    {
+        $duration = strtolower(trim($duration));
+
+        if (preg_match('/^(\d+)\s*w$/', $duration, $m)) {
+            return (int) $m[1] * 7 * 24 * 3600;
+        }
+
+        if (preg_match('/^(\d+)\s*d$/', $duration, $m)) {
+            return (int) $m[1] * 24 * 3600;
+        }
+
+        if (preg_match('/^(\d+)\s*h$/', $duration, $m)) {
+            return (int) $m[1] * 3600;
+        }
+
+        if (preg_match('/^(\d+)\s*m$/', $duration, $m)) {
+            return (int) $m[1] * 60;
+        }
+
+        if (preg_match('/^(\d+)\s*s$/', $duration, $m)) {
+            return (int) $m[1];
+        }
+
+        if (preg_match('/^(\d+):(\d{2}):(\d{2})$/', $duration, $m)) {
+            return ((int) $m[1] * 3600)
+                + ((int) $m[2] * 60)
+                + (int) $m[3];
+        }
+
+        if (preg_match('/^(\d+):(\d{2})$/', $duration, $m)) {
+            return ((int) $m[1] * 60) + (int) $m[2];
+        }
+
+        return 0;
+    }
+
+    private function makeUsername(HotspotPurchaseRequest $purchase): string
+    {
+        return 'HSP'.str_pad((string) $purchase->id, 8, '0', STR_PAD_LEFT);
+    }
+
+    private function startAttempt(HotspotPurchaseRequest $purchase): HotspotActivationAttempt
+    {
+        $nextNumber = ((int) $purchase->activationAttempts()->max('attempt_number')) + 1;
+
+        return $purchase->activationAttempts()->create([
+            'router_name' => $purchase->router_name,
+            'mac_address' => $purchase->mac_address,
+            'attempt_number' => $nextNumber,
+            'status' => 'processing',
+            'started_at' => now(),
+        ]);
+    }
+
+    private function markFailed(
+        HotspotPurchaseRequest $purchase,
+        string $message
+    ): HotspotPurchaseRequest {
+        $purchase->update([
+            'activation_status' => 'failed',
+            'activation_failed_at' => now(),
+            'activation_error' => $message,
+        ]);
+
+        return $purchase->fresh();
+    }
+}

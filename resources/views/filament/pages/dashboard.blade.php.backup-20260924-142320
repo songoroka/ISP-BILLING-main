@@ -1,0 +1,15 @@
+<x-filament-panels::page>
+
+    <div class="mb-5">
+        <h1 class="text-2xl font-bold tracking-tight">
+            SKYTECH INFRANET
+        </h1>
+
+        <p class="text-sm text-gray-500 dark:text-gray-400">
+            Super Admin Dashboard
+        </p>
+    </div>
+
+    @livewire(\App\Filament\Widgets\DashboardOverviewWidget::class)
+
+</x-filament-panels::page>

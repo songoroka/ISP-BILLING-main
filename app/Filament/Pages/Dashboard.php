@@ -1,0 +1,43 @@
+<?php
+
+namespace App\Filament\Pages;
+
+use App\Http\Controllers\DashboardController;
+use Filament\Pages\Page;
+
+class Dashboard extends Page
+{
+    protected static ?string $title = 'Dashboard';
+
+    protected static string|\BackedEnum|null $navigationIcon = 'heroicon-o-home';
+
+    protected static ?int $navigationSort = 0;
+
+    public static function shouldRegisterNavigation(): bool
+    {
+        return false;
+    }
+
+    protected string $view = 'filament.pages.dashboard';
+
+    public array $results = [];
+
+    public array $customersData = [];
+
+    public array $billInformationData = [];
+
+    public array $systemOverview = [];
+
+    public array $resellerData = [];
+
+    public function mount(): void
+    {
+        $data = app(DashboardController::class)->getDashboardData();
+
+        $this->results = $data['results'] ?? [];
+        $this->customersData = $data['customersData'] ?? [];
+        $this->billInformationData = $data['billInformationData'] ?? [];
+        $this->systemOverview = $data['systemOverview'] ?? [];
+        $this->resellerData = $data['resellerData'] ?? [];
+    }
+}

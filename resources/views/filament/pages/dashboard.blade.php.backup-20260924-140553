@@ -1,0 +1,31 @@
+<x-filament-panels::page>
+    <div class="space-y-6">
+
+        {{-- Dashboard Header --}}
+        <div>
+            <h1 class="text-2xl font-bold tracking-tight">
+                SKYTECH INFRANET
+            </h1>
+
+            <p class="text-sm text-gray-500 dark:text-gray-400">
+                Super Admin Dashboard
+            </p>
+        </div>
+
+        {{-- Main Dashboard Widgets --}}
+        <div class="grid grid-cols-1 gap-6 xl:grid-cols-3">
+
+            {{-- Billing / Financial Summary --}}
+            <div class="xl:col-span-2">
+                @livewire(\App\Filament\Widgets\BillSummaryWidget::class)
+            </div>
+
+            {{-- Data Usage --}}
+            <div class="xl:col-span-1">
+                @livewire(\App\Filament\Widgets\DataUsageWidget::class)
+            </div>
+
+        </div>
+
+    </div>
+</x-filament-panels::page>

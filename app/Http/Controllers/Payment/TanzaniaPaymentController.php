@@ -1,0 +1,227 @@
+<?php
+
+namespace App\Http\Controllers\Payment;
+
+use App\Http\Controllers\Controller;
+use App\Models\CustomersInfo;
+use App\Models\PaymentTransaction;
+use App\Services\Payments\TanzaniaPaymentService;
+use App\Services\Payments\HotspotPaymentService;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
+
+class TanzaniaPaymentController extends Controller
+{
+    public function __construct(
+        private TanzaniaPaymentService $payments,
+        private HotspotPaymentService $hotspotPayments
+    ) {}
+
+    public function initiate(Request $request, string $provider)
+    {
+        $request->validate(['amount'=>'required|numeric|min:1','phone'=>'nullable|string|max:20']);
+        abort_unless(in_array($provider, ['selcom','mpesa_tz','beem_bpay','azampesa'], true), 404);
+        $user = auth('ppp')->user();
+        abort_unless($user && $user->customer, 403);
+        try {
+            $tx = $this->payments->initiate($user->customer, (float)$request->amount, $provider, $request->phone);
+            if ($tx->status === 'paid') return redirect()->route('filament.portal.pages.pay-bill')->with('success','Payment completed successfully.');
+            if ($provider === 'beem_bpay' && $tx->redirect_url) return redirect()->away($tx->redirect_url);
+            return redirect()->route('payment.tanzania.pending', $tx->merchant_reference);
+        } catch (\Throwable $e) {
+            Log::error('Tanzania payment initiation failed', ['provider'=>$provider,'error'=>$e->getMessage()]);
+            return redirect()->route('filament.portal.pages.pay-bill')->with('error','Payment could not be started. Check gateway configuration and try again.');
+        }
+    }
+
+    public function pending(string $reference)
+    {
+        $tx = PaymentTransaction::where('merchant_reference',$reference)->firstOrFail();
+        abort_unless(auth('ppp')->user()?->customer?->customer_unique_id === $tx->customer_unique_id, 403);
+        return view('payment.tanzania-pending', compact('tx'));
+    }
+
+    public function status(string $reference)
+    {
+        $tx = PaymentTransaction::where('merchant_reference',$reference)->firstOrFail();
+        abort_unless(auth('ppp')->user()?->customer?->customer_unique_id === $tx->customer_unique_id, 403);
+        $tx = $this->payments->query($tx);
+        return response()->json(['status'=>$tx->status,'reference'=>$tx->merchant_reference]);
+    }
+
+    public function selcomWebhook(Request $request)
+    {
+        $this->validateWebhookToken($request, 'selcom');
+        return $this->processWebhook($request, 'selcom');
+    }
+
+    public function beemBpayWebhook(Request $request)
+    {
+        $secret = config('services.beem.webhook_secret');
+        if ($secret && ! hash_equals($secret, (string) $request->header('X-Beem-Webhook-Secret', $request->input('webhook_secret', '')))) {
+            abort(401, 'Invalid Beem webhook secret.');
+        }
+
+        $payload = $request->all();
+        $normalized = app(\App\Services\Payments\BeemBpayGateway::class)->normalizeWebhook($payload);
+        $reference = $normalized['reference_number'];
+        $providerTx = $normalized['transaction_id'];
+
+        $tx = PaymentTransaction::where('provider', 'beem_bpay')
+            ->where(function ($q) use ($providerTx, $reference) {
+                if ($providerTx) $q->where('provider_transaction_id', $providerTx);
+                if ($reference) $q->orWhere('merchant_reference', $reference);
+            })
+            ->latest('id')
+            ->first();
+
+        if (! $tx) {
+            Log::warning('Beem BPay callback received for unknown transaction.', ['payload' => $payload]);
+            return response()->json(['transaction_id' => $providerTx, 'successful' => true, 'message' => 'Callback received.']);
+        }
+
+        if ($normalized['amount'] !== null && (float) $normalized['amount'] !== (float) $tx->amount) {
+            Log::warning('Beem BPay amount mismatch.', ['merchant_reference' => $tx->merchant_reference, 'expected' => $tx->amount, 'received' => $normalized['amount']]);
+            return response()->json(['transaction_id' => $providerTx, 'successful' => false, 'message' => 'Amount mismatch.'], 422);
+        }
+
+        if ($normalized['status'] === 'paid') {
+            if ($this->hotspotPayments->isHotspotTransaction($tx)) {
+                $this->hotspotPayments->finalizeCallback(
+                    $tx,
+                    $providerTx,
+                    $reference,
+                    $payload
+                );
+            } else {
+                $this->payments->markPaid(
+                    $tx,
+                    $providerTx,
+                    $reference,
+                    $payload
+                );
+            }
+        } elseif ($normalized['status'] === 'failed') {
+            $tx->update(['status' => 'failed', 'provider_transaction_id' => $providerTx ?: $tx->provider_transaction_id, 'provider_reference' => $reference ?: $tx->provider_reference, 'response_payload' => $payload]);
+        } else {
+            $tx->update(['status' => 'pending', 'response_payload' => $payload]);
+        }
+
+        return response()->json(['transaction_id' => $providerTx ?: $tx->merchant_reference, 'successful' => true]);
+    }
+
+
+    public function azampesaWebhook(Request $request)
+    {
+        $secret = config('services.azampay.webhook_secret');
+        if ($secret && ! hash_equals($secret, (string) $request->header('X-AzamPay-Webhook-Secret', $request->input('webhook_secret', '')))) {
+            abort(401, 'Invalid AzamPay webhook secret.');
+        }
+
+        $payload = $request->all();
+        $normalized = app(\App\Services\Payments\AzamPesaGateway::class)->normalizeWebhook($payload);
+        $reference = $normalized['merchant_reference'];
+        $providerTx = $normalized['transaction_id'];
+
+        $tx = PaymentTransaction::where('provider', 'azampesa')
+            ->where(function ($q) use ($providerTx, $reference) {
+                if ($providerTx) $q->where('provider_transaction_id', $providerTx);
+                if ($reference) $q->orWhere('merchant_reference', $reference);
+            })
+            ->latest('id')
+            ->first();
+
+        if (!$tx) {
+            Log::warning('AzamPesa callback received for unknown transaction.', ['payload' => $payload]);
+            return response()->json(['success' => true, 'message' => 'Callback received.']);
+        }
+
+        if ($normalized['amount'] !== null && abs((float) $normalized['amount'] - (float) $tx->amount) > 0.001) {
+            Log::warning('AzamPesa amount mismatch.', ['merchant_reference' => $tx->merchant_reference, 'expected' => $tx->amount, 'received' => $normalized['amount']]);
+            return response()->json(['success' => false, 'message' => 'Amount mismatch.'], 422);
+        }
+
+        if ($normalized['status'] === 'paid') {
+            if ($this->hotspotPayments->isHotspotTransaction($tx)) {
+                $this->hotspotPayments->finalizeCallback(
+                    $tx,
+                    $providerTx,
+                    $normalized['reference'],
+                    $payload
+                );
+            } else {
+                $this->payments->markPaid(
+                    $tx,
+                    $providerTx,
+                    $normalized['reference'],
+                    $payload
+                );
+            }
+        } elseif ($normalized['status'] === 'failed') {
+            $tx->update([
+                'status' => 'failed',
+                'provider_transaction_id' => $providerTx ?: $tx->provider_transaction_id,
+                'provider_reference' => $normalized['reference'] ?: $tx->provider_reference,
+                'response_payload' => $payload,
+            ]);
+        } else {
+            $tx->update(['status' => 'pending', 'response_payload' => $payload]);
+        }
+
+        return response()->json(['success' => true, 'message' => 'Callback recorded.']);
+    }
+
+    public function mpesaWebhook(Request $request)
+    {
+        $this->validateWebhookToken($request, 'mpesa_tz');
+        return $this->processWebhook($request, 'mpesa_tz');
+    }
+
+    private function validateWebhookToken(Request $request, string $provider): void
+    {
+        $expected = $provider === 'selcom'
+            ? (siteUrlSettings('payment_selcom_webhook_token') ?: env('SELCOM_WEBHOOK_TOKEN'))
+            : (siteUrlSettings('payment_mpesa_tz_webhook_token') ?: env('MPESA_TZ_WEBHOOK_TOKEN'));
+        if (!$expected) return;
+        $received = $request->bearerToken() ?: $request->header('X-Webhook-Token');
+        abort_unless($received && hash_equals($expected, $received), 401);
+    }
+
+    private function processWebhook(Request $request, string $provider)
+    {
+        $data = $request->all();
+        Log::info('Tanzania payment webhook', ['provider'=>$provider,'payload'=>$data]);
+        $reference = $data['order_id'] ?? $data['invoice_no'] ?? $data['input_ThirdPartyReference'] ?? $data['merchantReference'] ?? $data['reference'] ?? null;
+        $txid = $data['transid'] ?? $data['output_TransactionID'] ?? $data['transactionId'] ?? null;
+        $status = strtoupper((string)($data['payment_status'] ?? $data['result'] ?? $data['output_ResponseCode'] ?? ''));
+        if (!$reference) return response()->json(['result'=>'FAIL','message'=>'Missing payment reference'],422);
+        $tx = PaymentTransaction::where('merchant_reference',$reference)->where('provider',$provider)->first();
+        if (!$tx) return response()->json(['result'=>'FAIL','message'=>'Payment reference not found'],404);
+        $incomingAmount = $data['amount'] ?? $data['input_Amount'] ?? null;
+        if ($incomingAmount !== null && abs((float)$incomingAmount - (float)$tx->amount) > 0.001) {
+            Log::warning('Tanzania payment webhook amount mismatch', ['reference'=>$reference,'expected'=>$tx->amount,'received'=>$incomingAmount]);
+            return response()->json(['result'=>'FAIL','message'=>'Amount mismatch'],422);
+        }
+        if (in_array($status,['SUCCESS','COMPLETE','COMPLETED','000','0'],true)) {
+            if ($this->hotspotPayments->isHotspotTransaction($tx)) {
+                $this->hotspotPayments->finalizeCallback(
+                    $tx,
+                    $txid,
+                    $data['reference'] ?? null,
+                    $data
+                );
+            } else {
+                $this->payments->markPaid(
+                    $tx,
+                    $txid,
+                    $data['reference'] ?? null,
+                    $data
+                );
+            }
+
+            return response()->json(['result'=>'SUCCESS','message'=>'Payment accepted']);
+        }
+        if (in_array($status,['FAIL','FAILED','CANCELLED','REJECTED'],true)) $tx->update(['status'=>'failed','response_payload'=>$data]);
+        return response()->json(['result'=>'SUCCESS','message'=>'Webhook recorded']);
+    }
+}

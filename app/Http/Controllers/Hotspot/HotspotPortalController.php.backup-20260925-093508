@@ -1,0 +1,180 @@
+<?php
+
+namespace App\Http\Controllers\Hotspot;
+
+use App\Http\Controllers\Controller;
+use App\Models\HotspotPurchaseRequest;
+use App\Models\PackageList;
+use App\Models\RouterList;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+use Illuminate\Support\Str;
+
+class HotspotPortalController extends Controller
+{
+    /**
+     * Receive a purchase request from a specific MikroTik captive portal.
+     *
+     * The router_name is the authoritative router identity.
+     * The MAC address identifies the customer on that router.
+     *
+     * This endpoint only creates the purchase request.
+     * Payment and activation happen separately.
+     */
+    public function purchase(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'router_name' => ['required', 'string', 'max:255'],
+            'portal_token' => ['required', 'string', 'max:128'],
+            'mac_address' => ['required', 'string', 'max:64'],
+            'ip_address' => ['nullable', 'string', 'max:64'],
+
+            'package_id' => ['required', 'integer', 'exists:package_lists,id'],
+
+            'phone' => ['required', 'string', 'max:32'],
+
+            'login_url' => ['nullable', 'string', 'max:1000'],
+            'link_login' => ['nullable', 'string', 'max:1000'],
+            'original_destination' => ['nullable', 'string', 'max:2000'],
+        ]);
+
+        /*
+         * Confirm that the requested router actually exists.
+         */
+       $validated['mac_address'] = strtoupper(trim($validated['mac_address']));
+        $validated['mac_address'] = strtoupper(trim($validated['mac_address']));
+
+        $router = RouterList::where(
+            'router_name',
+            $validated['router_name']
+        )->first();
+
+        if (! $router) {
+            return response()->json([
+                'success' => false,
+                'message' => 'The requested router was not found.',
+            ], 422);
+        }
+
+        if (! $router->portal_token
+            || ! hash_equals($router->portal_token, $validated['portal_token'])) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Invalid router portal credentials.',
+            ], 403);
+        }
+
+        /*
+         * The package must belong to the same router.
+         * This prevents a customer connected to Router A
+         * from purchasing a package belonging to Router B.
+         */
+        $package = PackageList::whereKey($validated['package_id'])
+            ->where('router_name', $validated['router_name'])
+            ->first();
+
+        if (! $package) {
+            return response()->json([
+                'success' => false,
+                'message' => 'The selected package is not available on this router.',
+            ], 422);
+        }
+
+        /*
+         * Prevent duplicate active purchases for the same
+         * customer MAC on the same router.
+         *
+         * A previous completed/failed purchase is not blocked.
+         */
+        $existing = HotspotPurchaseRequest::where(
+                'router_name',
+                $validated['router_name']
+            )
+            ->where(
+                'mac_address',
+                $validated['mac_address']
+            )
+            ->whereIn('activation_status', [
+                'pending',
+                'processing',
+            ])
+            ->whereIn('payment_status', [
+                'pending',
+                'paid',
+            ])
+            ->latest('id')
+            ->first();
+
+        if ($existing) {
+            return response()->json([
+                'success' => true,
+                'message' => 'An active purchase request already exists for this device.',
+                'purchase' => [
+                    'id' => $existing->id,
+                    'merchant_reference' => $existing->merchant_reference,
+                    'payment_status' => $existing->payment_status,
+                    'activation_status' => $existing->activation_status,
+                    'amount' => $existing->amount,
+                    'currency' => $existing->currency,
+                ],
+            ]);
+        }
+
+        $purchase = HotspotPurchaseRequest::create([
+            'router_name' => $validated['router_name'],
+            'mac_address' => $validated['mac_address'],
+            'ip_address' => $validated['ip_address'] ?? null,
+
+            'package_id' => $package->id,
+            'package_name' => $package->package,
+            'amount' => $package->price,
+            'currency' => 'TZS',
+
+            'phone' => $validated['phone'],
+            'payment_gateway' => null,
+
+            'merchant_reference' => $this->generateMerchantReference(),
+
+            'payment_status' => 'pending',
+            'activation_status' => 'pending',
+
+            'login_url' => $validated['login_url'] ?? null,
+            'link_login' => $validated['link_login'] ?? null,
+            'original_destination' =>
+                $validated['original_destination'] ?? null,
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Hotspot purchase request created.',
+            'purchase' => [
+                'id' => $purchase->id,
+                'merchant_reference' => $purchase->merchant_reference,
+                'router_name' => $purchase->router_name,
+                'mac_address' => $purchase->mac_address,
+                'package_name' => $purchase->package_name,
+                'amount' => $purchase->amount,
+                'currency' => $purchase->currency,
+                'payment_status' => $purchase->payment_status,
+                'activation_status' => $purchase->activation_status,
+            ],
+        ], 201);
+    }
+
+    protected function generateMerchantReference(): string
+    {
+        do {
+            $reference = 'HSP-' .
+                now()->format('YmdHis') .
+                '-' .
+                strtoupper(Str::random(8));
+        } while (
+            HotspotPurchaseRequest::where(
+                'merchant_reference',
+                $reference
+            )->exists()
+        );
+
+        return $reference;
+    }
+}

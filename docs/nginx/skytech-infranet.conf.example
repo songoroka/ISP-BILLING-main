@@ -1,0 +1,53 @@
+# SKYTECH INFRANET production Nginx example
+# Replace /var/www/skytech with the actual application path.
+# All four hostnames point to the same Laravel application; Laravel selects
+# the correct workspace by hostname.
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name skytech.it.com www.skytech.it.com portal.skytech.it.com demo.skytech.it.com hotel.skytech.it.com;
+
+    root /var/www/skytech/public;
+    index index.php index.html;
+
+    location / {
+        try_files $uri $uri/ /index.php?$query_string;
+    }
+
+    location ~ \.php$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:/run/php/php8.3-fpm.sock;
+    }
+
+    location ~ /\.(?!well-known).* {
+        deny all;
+    }
+}
+
+# After obtaining the TLS certificate, use the equivalent HTTPS server block:
+#
+# server {
+#     listen 443 ssl http2;
+#     listen [::]:443 ssl http2;
+#     server_name skytech.it.com www.skytech.it.com portal.skytech.it.com demo.skytech.it.com hotel.skytech.it.com;
+#
+#     root /var/www/skytech/public;
+#     index index.php index.html;
+#
+#     ssl_certificate /etc/letsencrypt/live/skytech.it.com/fullchain.pem;
+#     ssl_certificate_key /etc/letsencrypt/live/skytech.it.com/privkey.pem;
+#
+#     location / {
+#         try_files $uri $uri/ /index.php?$query_string;
+#     }
+#
+#     location ~ \.php$ {
+#         include snippets/fastcgi-php.conf;
+#         fastcgi_pass unix:/run/php/php8.3-fpm.sock;
+#     }
+#
+#     location ~ /\.(?!well-known).* {
+#         deny all;
+#     }
+# }

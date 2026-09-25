@@ -1,0 +1,13 @@
+<?php
+
+return [
+    'name' => env('APP_NAME', 'SKYTECH INFRANET'),
+    'founder' => env('APP_FOUNDER', 'Adam Kessi Adam'),
+    'country' => env('APP_COUNTRY', 'Tanzania'),
+    'currency' => env('APP_CURRENCY', 'TZS'),
+    'currency_symbol' => env('APP_CURRENCY_SYMBOL', 'TSh'),
+    'domain' => env('APP_DOMAIN', 'skytech.it.com'),
+    'portal_domain' => env('ADMIN_PORTAL_DOMAIN', 'admin.skytech.it.com'),
+    'demo_domain' => env('DEMO_DOMAIN', 'demo.skytech.it.com'),
+    'hotel_domain' => env('HOTEL_DOMAIN', 'hotel.skytech.it.com'),
+];

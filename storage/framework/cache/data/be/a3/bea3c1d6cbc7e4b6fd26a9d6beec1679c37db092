@@ -1,0 +1,1 @@
+1790341691a:1:{i:0;a:11:{s:2:"id";s:1:"0";s:4:"name";s:7:"server1";s:6:"status";s:6:"active";s:9:"interface";s:7:"bridge1";s:12:"address-pool";s:10:"dhcp_pool2";s:7:"profile";s:7:"default";s:12:"idle-timeout";s:2:"5m";s:17:"keepalive-timeout";s:4:"none";s:13:"login-timeout";s:4:"none";s:17:"addresses-per-mac";s:1:"1";s:12:"proxy-status";s:7:"running";}}

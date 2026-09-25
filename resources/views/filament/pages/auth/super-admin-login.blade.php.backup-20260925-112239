@@ -1,0 +1,132 @@
+<x-filament-panels::page.simple>
+    <div class="min-h-screen bg-slate-100 flex items-center justify-center px-4 py-8 sm:px-6">
+
+        <div class="w-full max-w-5xl overflow-hidden rounded-2xl bg-white shadow-2xl ring-1 ring-slate-200 lg:grid lg:grid-cols-2">
+
+            {{-- BRANDING SIDE --}}
+            <div class="relative hidden min-h-[620px] overflow-hidden bg-slate-900 lg:flex lg:flex-col lg:justify-between p-12 text-white">
+
+                {{-- Decorative shapes --}}
+                <div class="absolute -right-24 -top-24 h-80 w-80 rounded-full bg-blue-600/30 blur-3xl"></div>
+                <div class="absolute -bottom-32 -left-24 h-96 w-96 rounded-full bg-cyan-500/20 blur-3xl"></div>
+
+                <div class="relative z-10">
+
+                    {{-- SYSTEM LOGO --}}
+                    <div class="flex items-center gap-4">
+                        <div class="flex h-16 w-16 items-center justify-center rounded-xl bg-white p-2 shadow-lg">
+                            <img
+                                src="{{ site_image(siteUrlSettings('site_logo'), 'images/skytech-infranet-logo.png') }}"
+                                alt="{{ siteUrlSettings('site_name') ?? 'SKYTECH INFRANET' }}"
+                                class="max-h-12 max-w-12 object-contain"
+                            >
+                        </div>
+
+                        <div>
+                            <div class="text-xl font-bold tracking-wide">
+                                {{ siteUrlSettings('site_name') ?? 'SKYTECH INFRANET' }}
+                            </div>
+
+                            <div class="mt-1 text-sm text-slate-300">
+                                ISP Management System
+                            </div>
+                        </div>
+                    </div>
+
+                    {{-- MAIN MESSAGE --}}
+                    <div class="mt-28 max-w-md">
+                        <div class="mb-4 text-sm font-semibold uppercase tracking-[0.3em] text-cyan-400">
+                            Super Admin
+                        </div>
+
+                        <h1 class="text-4xl font-bold leading-tight xl:text-5xl">
+                            Everything you need to manage your ISP.
+                        </h1>
+
+                        <p class="mt-6 text-base leading-7 text-slate-300">
+                            Manage customers, billing, payments, resellers,
+                            MikroTik infrastructure and your entire network
+                            from one secure platform.
+                        </p>
+                    </div>
+                </div>
+
+                {{-- FOOTER --}}
+                <div class="relative z-10 flex items-center justify-between border-t border-white/10 pt-6 text-xs text-slate-400">
+                    <span>Secure Administration Portal</span>
+                    <span>TSh • TZS</span>
+                </div>
+            </div>
+
+
+            {{-- LOGIN SIDE --}}
+            <div class="flex min-h-[620px] items-center justify-center bg-white px-6 py-10 sm:px-12 lg:px-16">
+
+                <div class="w-full max-w-md">
+
+                    {{-- MOBILE LOGO --}}
+                    <div class="mb-8 flex justify-center lg:hidden">
+                        <div class="flex h-16 w-16 items-center justify-center rounded-xl bg-slate-50 p-2 ring-1 ring-slate-200">
+                            <img
+                                src="{{ site_image(siteUrlSettings('site_logo'), 'images/skytech-infranet-logo.png') }}"
+                                alt="{{ siteUrlSettings('site_name') ?? 'SKYTECH INFRANET' }}"
+                                class="max-h-12 max-w-12 object-contain"
+                            >
+                        </div>
+                    </div>
+
+                    {{-- HEADING --}}
+                    <div class="mb-9">
+                        <p class="mb-3 text-sm font-semibold uppercase tracking-widest text-blue-600">
+                            Super Admin Portal
+                        </p>
+
+                        <h2 class="text-3xl font-bold tracking-tight text-slate-900">
+                            Welcome back
+                        </h2>
+
+                        <p class="mt-2 text-sm text-slate-500">
+                            Sign in to continue to your dashboard.
+                        </p>
+                    </div>
+
+                    {{-- LOGIN FORM --}}
+                    <form wire:submit="authenticate" class="space-y-6">
+
+                        {{ $this->form }}
+
+                        {{-- SIGN IN BUTTON --}}
+                        <button
+                            type="submit"
+                            wire:loading.attr="disabled"
+                            class="flex w-full items-center justify-center rounded-xl bg-blue-600 px-5 py-3.5 text-sm font-semibold text-white shadow-lg shadow-blue-600/20 transition duration-200 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                            <span wire:loading.remove wire:target="authenticate">
+                                Sign in
+                            </span>
+
+                            <span wire:loading wire:target="authenticate">
+                                Signing in...
+                            </span>
+                        </button>
+
+                    </form>
+
+                    {{-- FOOTER --}}
+                    <div class="mt-10 border-t border-slate-100 pt-6 text-center">
+                        <p class="text-xs text-slate-400">
+                            © {{ date('Y') }}
+                            {{ siteUrlSettings('site_name') ?? 'SKYTECH INFRANET' }}
+                        </p>
+
+                        <p class="mt-1 text-xs text-slate-400">
+                            Authorized access only
+                        </p>
+                    </div>
+
+                </div>
+            </div>
+
+        </div>
+    </div>
+</x-filament-panels::page.simple>

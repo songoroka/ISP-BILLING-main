@@ -1,0 +1,650 @@
+<?php
+
+namespace App\Livewire;
+
+use App\Http\Controllers\MikrotikController;
+use App\Models\PackageList;
+use App\Models\RouterList;
+use Illuminate\Validation\Rule;
+use Livewire\Component;
+
+class PackageListSetup extends Component
+{
+    public $package_id;
+
+    public $package_name;
+
+    public $price;
+
+    public $description;
+
+    public $plan_label;
+
+    public $speed;
+
+    public $features_text = "24 HOURS UNLIMITED\nFiber Optics\nOTC Fee - 3000 Taka\n24/7 Customer Support";
+
+    public $is_featured = false;
+
+    public $show_on_site = true;
+
+    public $sort_order = 0;
+
+    public $mikrotik_rate_limit;
+
+    public $mikrotik_local_address;
+
+    public $mikrotik_remote_address;
+
+    public $push_to_mikrotik = false;
+    public $service_type = 'both';
+public $ttl_mangle_enabled = false;
+public $ttl_value = 1;
+public $ttl_chain = 'postrouting';
+
+    public $mikrotik_pools = [];
+
+    public $router_name = null;
+
+    public $packagesData = [];
+
+    public function mount(): void
+    {
+        if (! hasAccess(['Super Admin'], ['package-setup'])) {
+            abort(403, 'Unauthorized action.');
+        }
+        $this->reset([
+            'package_id', 'package_name', 'price', 'description', 'plan_label', 'speed',
+            'features_text', 'is_featured', 'show_on_site', 'sort_order',
+            'mikrotik_rate_limit', 'mikrotik_local_address', 'mikrotik_remote_address',
+                'push_to_mikrotik', 'service_type', 'router_name', 'ttl_mangle_enabled', 'ttl_value', 'ttl_chain',
+        ]);
+        $this->show_on_site = true;
+            $this->ttl_mangle_enabled = false;
+            $this->ttl_value = 1;
+            $this->ttl_chain = 'postrouting';
+        $this->dataRender();
+    }
+
+    public function dataRender()
+    {
+        $this->packagesData = PackageList::with('router')->orderBy('sort_order')->orderBy('price')->get()->toArray();
+    }
+
+    protected function rules(): array
+    {
+        return [
+            'package_name' => [
+                'required', 'string', 'max:255',
+                Rule::unique('package_lists', 'package')
+                    ->ignore($this->package_id)
+                    ->where('router_name', $this->router_name),
+            ],
+            'router_name' => 'nullable|string|max:255',
+            'price' => 'required|numeric',
+            'description' => 'nullable|max:255',
+            'plan_label' => 'nullable|max:50',
+            'speed' => 'nullable|max:100',
+            'features_text' => 'nullable|string',
+            'sort_order' => 'nullable|integer|min:0',
+            'mikrotik_rate_limit' => 'nullable|max:100',
+            'mikrotik_local_address' => 'nullable|max:100',
+            'mikrotik_remote_address' => 'nullable|max:100',
+            'service_type' => 'required|in:ppp,hotspot,both',
+            'ttl_mangle_enabled' => 'boolean',
+            'ttl_value' => 'nullable|integer|min:1|max:255',
+            'ttl_chain' => 'required_if:ttl_mangle_enabled,true|in:prerouting,input,forward,output,postrouting',
+        ];
+    }
+
+    public function updatedRouterName($value): void
+    {
+        if ($value) {
+            $this->loadPools();
+        } else {
+            $this->mikrotik_pools = [];
+        }
+    }
+
+    public function createPackage(): void
+    {
+        $this->validate();
+        \Log::info('PackageListSetup: Starting createPackage for id='.($this->package_id ?? 'NEW').' name='.$this->package_name);
+
+        try {
+            // Convert newline-separated features to JSON array
+            $features = collect(explode("\n", $this->features_text ?? ''))
+                ->map(fn ($f) => ['value' => trim($f)])
+                ->filter(fn ($f) => ! empty($f['value']))
+                ->values()
+                ->toArray();
+
+            $controller = app(MikrotikController::class);
+            $normalizedRouterName = ! empty($this->router_name) ? $this->router_name : null;
+
+            // Capture old state if editing
+            $oldPackage = null;
+            if ($this->package_id) {
+                $oldPackage = PackageList::find($this->package_id);
+                \Log::debug('PackageListSetup: Detected edit mode. Previous name='.($oldPackage?->package ?? 'N/A'));
+            }
+
+            // 1. Update or Create local record
+            $package = PackageList::updateOrCreate(
+                ['id' => $this->package_id],
+                [
+                    'package' => $this->package_name,
+                    'price' => $this->price,
+                    'description' => $this->description,
+                    'plan_label' => $this->plan_label,
+                    'speed' => $this->speed,
+                    'features' => $features,
+                    'is_featured' => $this->is_featured,
+                    'show_on_site' => $this->show_on_site,
+                    'sort_order' => $this->sort_order ?? 0,
+                    'mikrotik_rate_limit' => $this->mikrotik_rate_limit,
+                    'mikrotik_local_address' => $this->mikrotik_local_address,
+                    'mikrotik_remote_address' => $this->mikrotik_remote_address,
+                    'push_to_mikrotik' => $this->push_to_mikrotik,
+                    'service_type' => $this->service_type ?: 'both',
+                    'router_name' => $normalizedRouterName,
+                    'ttl_mangle_enabled' => $this->ttl_mangle_enabled,
+                    'ttl_value' => $this->ttl_mangle_enabled ? ($this->ttl_value ?: 1) : null,
+                    'ttl_chain' => $this->ttl_chain ?: 'postrouting',
+                ]
+            );
+
+            // 2. Synchronous MikroTik Logic
+            //
+            // Package service types:
+            //   ppp     = PPP profile only
+            //   hotspot = Hotspot profile + optional TTL/Mangle
+            //   both    = PPP + Hotspot
+            //
+            $pushError = null;
+
+            $newServiceType = $this->service_type ?: 'both';
+            $newHasPpp = in_array($newServiceType, ['ppp', 'both'], true);
+            $newHasHotspot = in_array($newServiceType, ['hotspot', 'both'], true);
+
+            $oldServiceType = $oldPackage?->service_type ?: 'both';
+            $oldHasPpp = in_array($oldServiceType, ['ppp', 'both'], true);
+            $oldHasHotspot = in_array($oldServiceType, ['hotspot', 'both'], true);
+
+            \Log::debug(
+                'PackageListSetup: MikroTik service sync: '
+                .'service_type='.$newServiceType
+                .', PPP='.($newHasPpp ? 'YES' : 'NO')
+                .', Hotspot='.($newHasHotspot ? 'YES' : 'NO')
+                .', push='.($this->push_to_mikrotik ? 'TRUE' : 'FALSE')
+                .', router='.($normalizedRouterName ?? 'ALL')
+            );
+
+            /*
+             * -------------------------------------------------------------
+             * 2A. CLEAN UP OLD CONFIGURATION
+             * -------------------------------------------------------------
+             */
+            if ($oldPackage && $oldPackage->push_to_mikrotik) {
+                $oldRouter = $oldPackage->router_name;
+                $routerChanged = $oldRouter !== $normalizedRouterName;
+                $renamed = $oldPackage->package !== $this->package_name;
+
+                // If PPP is no longer required, or push/router changed,
+                // remove the old PPP profile.
+                if (
+                    $oldHasPpp
+                    && (
+                        ! $this->push_to_mikrotik
+                        || ! $newHasPpp
+                        || $routerChanged
+                    )
+                ) {
+                    \Log::info(
+                        "PackageListSetup: Removing old PPP profile '{$oldPackage->package}'"
+                        .($oldRouter ? " from router '{$oldRouter}'" : ' from configured routers')
+                    );
+
+                    $controller->deleteProfileFromRouters(
+                        $oldPackage->package,
+                        $oldRouter
+                    );
+                }
+
+                // If Hotspot is no longer required, or push/router changed,
+                // remove the old Hotspot profile and its TTL rule.
+                if (
+                    $oldHasHotspot
+                    && (
+                        ! $this->push_to_mikrotik
+                        || ! $newHasHotspot
+                        || $routerChanged
+                    )
+                ) {
+                    \Log::info(
+                        "PackageListSetup: Removing old Hotspot configuration '{$oldPackage->package}'"
+                        .($oldRouter ? " from router '{$oldRouter}'" : ' from configured routers')
+                    );
+
+                    if ($oldRouter) {
+                        $controller->deleteHotspotUserProfile(
+                            $oldRouter,
+                            $oldPackage->package
+                        );
+
+                        $controller->removeHotspotTtlMangle(
+                            $oldRouter,
+                            $oldPackage->package
+                        );
+                    } else {
+                        foreach (RouterList::where('action', 'connected')->get() as $router) {
+                            $controller->deleteHotspotUserProfile(
+                                $router->router_name,
+                                $oldPackage->package
+                            );
+
+                            $controller->removeHotspotTtlMangle(
+                                $router->router_name,
+                                $oldPackage->package
+                            );
+                        }
+                    }
+                }
+
+                // If the package was renamed while remaining a PPP package,
+                // rename the existing PPP profile.
+                if (
+                    $oldHasPpp
+                    && $newHasPpp
+                    && $this->push_to_mikrotik
+                    && ! $routerChanged
+                    && $renamed
+                ) {
+                    \Log::info(
+                        "PackageListSetup: Renaming PPP profile '{$oldPackage->package}'"
+                        ." to '{$this->package_name}'"
+                    );
+
+                    $controller->updateProfileOnRouters(
+                        $oldPackage->package,
+                        $this->package_name,
+                        $this->mikrotik_rate_limit,
+                        $this->mikrotik_local_address,
+                        $this->mikrotik_remote_address,
+                        $normalizedRouterName
+                    );
+                }
+            }
+
+            /*
+             * -------------------------------------------------------------
+             * 2B. SYNCHRONIZE CURRENT PPP CONFIGURATION
+             * -------------------------------------------------------------
+             */
+            if ($this->push_to_mikrotik && $newHasPpp) {
+                try {
+                    \Log::info(
+                        "PackageListSetup: Syncing PPP profile '{$this->package_name}'"
+                        ." on router: ".($normalizedRouterName ?? 'ALL')
+                    );
+
+                    $pppResults = $controller->pushProfileToRouters(
+                        $this->package_name,
+                        $this->mikrotik_rate_limit ?: null,
+                        $this->mikrotik_local_address ?: null,
+                        $this->mikrotik_remote_address ?: null,
+                        $normalizedRouterName
+                    );
+
+                    \Log::debug(
+                        'PackageListSetup: PPP sync result: '
+                        .json_encode($pppResults)
+                    );
+
+                    $pppFailures = [];
+
+                    foreach ($pppResults as $routerKey => $result) {
+                        if (
+                            is_string($result)
+                            && str_starts_with($result, 'Error:')
+                        ) {
+                            $pppFailures[] = $routerKey.': '.$result;
+                        }
+                    }
+
+                    if (! empty($pppFailures)) {
+                        $pushError = 'PPP profile sync failed: '.implode('; ', $pppFailures);
+                    }
+                } catch (\Throwable $e) {
+                    \Log::error(
+                        "PackageListSetup: PPP sync failed for '{$this->package_name}': "
+                        .$e->getMessage(),
+                        ['exception' => $e]
+                    );
+
+                    $pushError = 'PPP profile sync failed: '.$e->getMessage();
+                }
+            }
+
+            /*
+             * -------------------------------------------------------------
+             * 2C. SYNCHRONIZE CURRENT HOTSPOT CONFIGURATION
+             * -------------------------------------------------------------
+             */
+            if ($this->push_to_mikrotik && $newHasHotspot) {
+                \Log::info(
+                    "PackageListSetup: Syncing Hotspot profile '{$this->package_name}'"
+                    ." on router: ".($normalizedRouterName ?? 'ALL')
+                );
+
+                try {
+                    if ($normalizedRouterName) {
+                        $hotspotResults = $controller->syncHotspotProfilesToRouter(
+                            $normalizedRouterName,
+                            collect([$package])
+                        );
+                    } else {
+                        $hotspotResults = [];
+
+                        foreach (RouterList::where('action', 'connected')->get() as $router) {
+                            $routerResults = $controller->syncHotspotProfilesToRouter(
+                                $router->router_name,
+                                collect([$package])
+                            );
+
+                            $hotspotResults[$router->router_name] = $routerResults;
+                        }
+                    }
+
+                    \Log::debug(
+                        'PackageListSetup: Hotspot sync result: '
+                        .json_encode($hotspotResults)
+                    );
+
+                    $hotspotFailures = [];
+
+                    foreach ($hotspotResults as $routerKey => $result) {
+                        if (is_array($result)) {
+                            foreach ($result as $profileName => $status) {
+                                if (
+                                    is_string($status)
+                                    && str_starts_with($status, 'Error:')
+                                ) {
+                                    $hotspotFailures[] = $routerKey.': '.$status;
+                                }
+                            }
+                        } elseif (
+                            is_string($result)
+                            && str_starts_with($result, 'Error:')
+                        ) {
+                            $hotspotFailures[] = $routerKey.': '.$result;
+                        }
+                    }
+
+                    if (! empty($hotspotFailures)) {
+                        $message = 'Hotspot profile sync failed: '.implode('; ', $hotspotFailures);
+
+                        if ($pushError) {
+                            $pushError .= ' '.$message;
+                        } else {
+                            $pushError = $message;
+                        }
+                    }
+                } catch (\Throwable $e) {
+                    \Log::error(
+                        "PackageListSetup: Hotspot sync failed for '{$this->package_name}': "
+                        .$e->getMessage(),
+                        ['exception' => $e]
+                    );
+
+                    $message = 'Hotspot profile sync failed: '.$e->getMessage();
+
+                    if ($pushError) {
+                        $pushError .= ' '.$message;
+                    } else {
+                        $pushError = $message;
+                    }
+                }
+            }
+
+            if ($pushError) {
+                flash()->warning('Package saved locally, but '.$pushError);
+            } else {
+                flash()->success('Package saved and synchronized successfully!');
+            }
+
+            \Log::info("PackageListSetup: createPackage COMPLETED for '{$this->package_name}'");
+            $this->reset([
+                'package_id', 'package_name', 'price', 'description', 'plan_label', 'speed',
+                'features_text', 'is_featured', 'sort_order',
+                'mikrotik_rate_limit', 'mikrotik_local_address', 'mikrotik_remote_address', 'push_to_mikrotik', 'router_name',
+            ]);
+            $this->show_on_site = true;
+            $this->dataRender();
+        } catch (\Exception $e) {
+            \Log::error("PackageListSetup: FAILED to save or sync package '{$this->package_name}': ".$e->getMessage(), [
+                'exception' => $e,
+            ]);
+            flash()->error('Error saving data: '.$e->getMessage());
+        }
+    }
+
+    public function editPackage(int $id): void
+    {
+        $package = PackageList::findOrFail($id);
+        $this->package_id = $id;
+        $this->package_name = $package->package;
+        $this->price = $package->price;
+        $this->description = $package->description;
+        $this->plan_label = $package->plan_label;
+        $this->speed = $package->speed;
+        $this->is_featured = $package->is_featured;
+        $this->show_on_site = $package->show_on_site;
+        $this->sort_order = $package->sort_order;
+        $this->mikrotik_rate_limit = $package->mikrotik_rate_limit;
+        $this->mikrotik_local_address = $package->mikrotik_local_address;
+        $this->mikrotik_remote_address = $package->mikrotik_remote_address;
+        $this->push_to_mikrotik = $package->push_to_mikrotik;
+        $this->service_type = $package->service_type ?: 'both';
+        $this->ttl_mangle_enabled = (bool) $package->ttl_mangle_enabled;
+        $this->ttl_value = $package->ttl_value ?: 1;
+        $this->ttl_chain = $package->ttl_chain ?: 'postrouting';
+        $this->router_name = $package->router_name;
+        $this->features_text = collect($package->features ?? [])->pluck('value')->implode("\n");
+    }
+
+    public function deletePackage(int $id): void
+    {
+        $package = PackageList::findOrFail($id);
+
+        // Remove from MikroTik routers first if push was enabled
+        if ($package->push_to_mikrotik) {
+            app(MikrotikController::class)->deleteProfileFromRouters($package->package, $package->router_name);
+        }
+
+        $package->delete();
+        flash()->success('Package deleted successfully!');
+        $this->dataRender();
+    }
+
+    public function updateSortOrder($reorder)
+    {
+        $this->packagesData = collect($reorder)->map(function ($pkg) {
+            return collect($this->packagesData)->firstWhere('id', (int) $pkg['value']);
+        })->toArray();
+        flash()->addInfo('Package List Successfully Reordered. Click "Save Order" to persist.');
+    }
+
+    public function saveSortOrder()
+    {
+        foreach ($this->packagesData as $index => $field) {
+            PackageList::where('id', $field['id'])->update(['sort_order' => $index + 1]);
+        }
+        flash()->success('Package order saved successfully!');
+        $this->dataRender();
+    }
+
+    public function loadPools(): void
+    {
+        if (empty($this->router_name)) {
+            flash()->warning('Please select a specific router first to load its IP pools.');
+
+            return;
+        }
+
+        try {
+            $routersPools = app(MikrotikController::class)->routerList(
+                $this->router_name,
+                '/ip/pool/print',
+                '/ip pool print without-paging terse'
+            );
+
+            $uniquePools = [];
+            foreach ($routersPools as $routerName => $result) {
+                if (isset($result['status']) && $result['status'] && is_array($result['data'])) {
+                    foreach ($result['data'] as $pool) {
+                        if (isset($pool['name'])) {
+                            $uniquePools[] = $pool['name'];
+                        }
+                    }
+                } else {
+                    // It might be an error from checkConnection
+                    $message = $result['message'] ?? 'Unknown error';
+                    flash()->error("[$routerName] $message");
+                }
+            }
+
+            $this->mikrotik_pools = array_unique($uniquePools);
+            if (empty($this->mikrotik_pools)) {
+                flash()->warning('No IP pools found on the selected router.');
+            } else {
+                flash()->success('Loaded '.count($this->mikrotik_pools).' pool(s) from '.array_key_first($routersPools).'.');
+            }
+        } catch (\Exception $e) {
+            flash()->error('Error loading pools: '.$e->getMessage());
+        }
+    }
+
+    public function syncFromMikrotik(): void
+    {
+        \Log::info('PackageListSetup: Starting full Two-Way Synchronization.');
+        try {
+            $controller = app(MikrotikController::class);
+            $profilesResults = $controller->routerList(
+                null,
+                '/ppp/profile/print',
+                '/ppp profile print without-paging terse'
+            );
+
+            $syncedCount = 0;
+            $restoredCount = 0;
+            $errors = [];
+            $existingOnRouter = []; // Track actual profiles: ['RouterName' => ['profile1', 'profile2']]
+
+            // --- PHASE 1: Pull from MikroTik to Local DB ---
+            foreach ($profilesResults as $routerName => $result) {
+                if (! isset($result['status']) || ! $result['status'] || ! is_array($result['data'])) {
+                    $errors[] = "$routerName: ".($result['message'] ?? 'Connection failed');
+
+                    continue;
+                }
+
+                $routerProfiles = $result['data'];
+                $existingOnRouter[$routerName] = [];
+
+                foreach ($routerProfiles as $profile) {
+                    $name = $profile['name'] ?? null;
+                    if (! $name || $name === 'default' || $name === 'default-encryption') {
+                        continue;
+                    }
+
+                    $existingOnRouter[$routerName][] = $name;
+
+                    // Parse rate-limit to Mbps for local display
+                    $rateLimit = $profile['rate-limit'] ?? null;
+                    $speed = null;
+                    if ($rateLimit) {
+                        $parts = explode('/', $rateLimit);
+                        $upload = trim($parts[0] ?? '');
+                        $download = trim($parts[1] ?? $upload);
+                        $speed = is_numeric($upload)
+                            ? round($upload / 1048576, 1).'/'.round($download / 1048576, 1).' Mbps'
+                            : "$upload / $download";
+                    }
+
+                    $localAddress = $profile['local-address'] ?? null;
+                    $remoteAddress = $profile['remote-address'] ?? null;
+
+                    $existing = PackageList::where('package', $name)->where('router_name', $routerName)->first();
+
+                    PackageList::updateOrCreate(
+                        ['package' => $name, 'router_name' => $routerName],
+                        [
+                            'speed' => $speed, // Source of truth: Router
+                            'mikrotik_rate_limit' => $rateLimit, // Source of truth: Router
+                            'mikrotik_local_address' => $localAddress, // Source of truth: Router
+                            'mikrotik_remote_address' => $remoteAddress, // Source of truth: Router
+                            'price' => $existing?->price ?? 0,
+                            'description' => $existing?->description ?? null,
+                            'plan_label' => $existing?->plan_label ?? null,
+                            'features' => $existing?->features ?? [],
+                            'is_featured' => $existing?->is_featured ?? false,
+                            'show_on_site' => $existing?->show_on_site ?? false,
+                            'sort_order' => $existing?->sort_order ?? 0,
+                            'push_to_mikrotik' => $existing?->push_to_mikrotik ?? false,
+                        ]
+                    );
+
+                    $syncedCount++;
+                }
+            }
+
+            // --- PHASE 2: Push missing local packages to MikroTik ---
+            $allConnectedRouters = array_keys(array_filter($profilesResults, fn ($r) => $r['status'] ?? false));
+            $packagesToSync = PackageList::where('push_to_mikrotik', true)->get();
+
+            foreach ($packagesToSync as $package) {
+                // If package defines a specific router, use it. Otherwise, assume it should exist on ALL connected routers.
+                $targetRouters = ! empty($package->router_name) ? [$package->router_name] : $allConnectedRouters;
+
+                foreach ($targetRouters as $rName) {
+                    // Skip if the router failed connection during pull
+                    if (! isset($existingOnRouter[$rName])) {
+                        continue;
+                    }
+
+                    // If profile is missing from this specific router, push it back
+                    if (! in_array($package->package, $existingOnRouter[$rName])) {
+                        $rateLimit = $package->mikrotik_rate_limit ?: null;
+                        \Log::info("PackageListSetup: Restoring missing profile '{$package->package}' to router '{$rName}' (Push enabled)");
+                        $controller->pushProfileToRouters($package->package, $rateLimit, $package->mikrotik_local_address, $package->mikrotik_remote_address, $rName);
+                        $restoredCount++;
+                    }
+                }
+            }
+
+            // --- FINAL MESSAGING ---
+            if (! empty($errors)) {
+                flash()->warning('Sync partially completed: '.implode(', ', $errors));
+            }
+
+            $msg = "$syncedCount profile(s) imported/updated.";
+            if ($restoredCount > 0) {
+                $msg .= " AND $restoredCount missing profile(s) restored to MikroTik.";
+            }
+            flash()->success($msg);
+
+            $this->dataRender();
+        } catch (\Exception $e) {
+            \Log::error('PackageListSetup: Two-Way Sync FAILED: '.$e->getMessage());
+            flash()->error('Full sync failed: '.$e->getMessage());
+        }
+    }
+
+    public function render()
+    {
+        $routers = RouterList::where('action', 'connected')->get();
+
+        return view('livewire.package-list-setup', compact('routers'))->layout('layouts.app');
+    }
+}

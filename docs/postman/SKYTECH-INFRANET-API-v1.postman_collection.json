@@ -1,0 +1,20 @@
+{
+  "info": {
+    "name": "SKYTECH INFRANET ISP Billing API v1",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {"key": "base_url", "value": "https://billing.example.com/api/v1"},
+    {"key": "token", "value": ""},
+    {"key": "customer_id", "value": "CUST000123"},
+    {"key": "merchant_reference", "value": ""}
+  ],
+  "item": [
+    {"name":"Auth - Get Token","request":{"method":"POST","header":[{"key":"Accept","value":"application/json"},{"key":"Content-Type","value":"application/json"}],"body":{"mode":"raw","raw":"{\n  \"email\": \"admin@example.com\",\n  \"password\": \"YOUR_PASSWORD\",\n  \"device_name\": \"external-system\"\n}"},"url":{"raw":"{{base_url}}/auth/token"}}},
+    {"name":"Health","request":{"method":"GET","header":[{"key":"Authorization","value":"Bearer {{token}}"},{"key":"Accept","value":"application/json"}],"url":{"raw":"{{base_url}}/health"}}},
+    {"name":"Customer Billing","request":{"method":"GET","header":[{"key":"Authorization","value":"Bearer {{token}}"},{"key":"Accept","value":"application/json"}],"url":{"raw":"{{base_url}}/customers/{{customer_id}}/billing"}}},
+    {"name":"Initiate Payment","request":{"method":"POST","header":[{"key":"Authorization","value":"Bearer {{token}}"},{"key":"Accept","value":"application/json"},{"key":"Content-Type","value":"application/json"}],"body":{"mode":"raw","raw":"{\n  \"customer_unique_id\": \"{{customer_id}}\",\n  \"amount\": 25000,\n  \"provider\": \"selcom\",\n  \"phone\": \"255712345678\"\n}"},"url":{"raw":"{{base_url}}/payments"}}},
+    {"name":"Payment Status","request":{"method":"GET","header":[{"key":"Authorization","value":"Bearer {{token}}"},{"key":"Accept","value":"application/json"}],"url":{"raw":"{{base_url}}/payments/{{merchant_reference}}"}}},
+    {"name":"Check Provider Status","request":{"method":"POST","header":[{"key":"Authorization","value":"Bearer {{token}}"},{"key":"Accept","value":"application/json"}],"url":{"raw":"{{base_url}}/payments/{{merchant_reference}}/check"}}}
+  ]
+}

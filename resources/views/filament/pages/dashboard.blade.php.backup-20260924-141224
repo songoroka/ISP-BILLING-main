@@ -1,0 +1,438 @@
+<x-filament-panels::page>
+
+    <div class="container-fluid">
+
+        {{-- =========================================================
+            DASHBOARD HEADER
+        ========================================================== --}}
+        <div class="card mb-3 overflow-hidden">
+            <div
+                class="bg-holder d-none d-lg-block bg-card"
+                style="background-image:url({{ asset('images/corner-4.png') }});">
+            </div>
+
+            <div class="card-body position-relative">
+                <div class="row align-items-center">
+                    <div class="col-md-8">
+                        <h3 class="mb-1 fw-bold">
+                            SKYTECH INFRANET
+                        </h3>
+
+                        <p class="mb-0 text-muted">
+                            Network & Billing Management Dashboard
+                        </p>
+                    </div>
+
+                    <div class="col-md-4 text-md-end mt-3 mt-md-0">
+                        <span class="badge badge-subtle-primary rounded-pill">
+                            Super Admin
+                        </span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+
+        {{-- =========================================================
+            MAIN STATISTICS
+        ========================================================== --}}
+        <div class="row g-3 mb-3">
+
+            <x-mikrotik.dashboard-card
+                style_img="images/icons/spot-illustrations/corner-1.png"
+                title="Total Customers"
+                badge="Customers"
+                :value="\App\Models\CustomersInfo::count()"
+            />
+
+            <x-mikrotik.dashboard-card
+                style_img="images/icons/spot-illustrations/corner-2.png"
+                title="Active Customers"
+                badge="Active"
+                :value="\App\Models\PPPSecrets::where('status', 'active')->count()"
+            />
+
+            <x-mikrotik.dashboard-card
+                style_img="images/icons/spot-illustrations/corner-3.png"
+                title="MikroTik Routers"
+                badge="Routers"
+                :value="\App\Models\RouterList::count()"
+            />
+
+            <x-mikrotik.dashboard-card
+                style_img="images/icons/spot-illustrations/corner-4.png"
+                title="Connected Routers"
+                badge="Online"
+                :value="\App\Models\RouterList::where('action', 'connected')->count()"
+            />
+
+        </div>
+
+
+        {{-- =========================================================
+            BILLING STATISTICS
+        ========================================================== --}}
+        <div class="row g-3 mb-3">
+
+            <x-mikrotik.dashboard-card
+                style_img="images/icons/spot-illustrations/corner-1.png"
+                title="Monthly Revenue"
+                badge="Billing"
+                :value="'৳'.number_format(
+                    \App\Models\BillingInfo::sum('paid_amount'),
+                    2
+                )"
+            />
+
+            <x-mikrotik.dashboard-card
+                style_img="images/icons/spot-illustrations/corner-2.png"
+                title="Outstanding"
+                badge="Due"
+                :value="'৳'.number_format(
+                    \App\Models\BillingInfo::sum('total_due_amount'),
+                    2
+                )"
+            />
+
+            <x-mikrotik.dashboard-card
+                style_img="images/icons/spot-illustrations/corner-3.png"
+                title="Packages"
+                badge="Plans"
+                :value="\App\Models\PackageList::count()"
+            />
+
+            <x-mikrotik.dashboard-card
+                style_img="images/icons/spot-illustrations/corner-4.png"
+                title="Resellers"
+                badge="Partners"
+                :value="\App\Models\User::whereHas('roles', function ($q) {
+                    $q->where('name', 'Reseller');
+                })->count()"
+            />
+
+        </div>
+
+
+        {{-- =========================================================
+            MIKROTIK ROUTERS
+        ========================================================== --}}
+        <div class="card mb-3">
+
+            <div class="card-header d-flex justify-content-between align-items-center">
+
+                <div>
+                    <h5 class="mb-0">
+                        MikroTik Network
+                    </h5>
+
+                    <small class="text-muted">
+                        Router status and connected subscribers
+                    </small>
+                </div>
+
+                <a
+                    href="{{ route('mikrotik-sync') }}"
+                    class="btn btn-sm btn-primary"
+                >
+                    Manage MikroTik
+                </a>
+
+            </div>
+
+            <div class="card-body">
+
+                <div class="row g-3">
+
+                    @foreach (
+                        \App\Models\RouterList::query()
+                            ->latest()
+                            ->limit(8)
+                            ->get()
+                        as $router
+                    )
+
+                        @php
+                            $customerCount = \App\Models\PPPSecrets::where(
+                                'router_name',
+                                $router->router_name
+                            )
+                            ->where('status', '!=', 'removed')
+                            ->count();
+                        @endphp
+
+                        <div class="col-12 col-sm-6 col-lg-4 col-xl-3">
+
+                            <div class="card h-100 border shadow-sm">
+
+                                <div
+                                    class="card-header d-flex justify-content-between align-items-center"
+                                >
+
+                                    <div class="overflow-hidden">
+
+                                        <h6 class="mb-0 text-truncate fw-bold">
+                                            {{ $router->router_name }}
+                                        </h6>
+
+                                        <small class="text-muted">
+                                            {{ $router->ip_address }}
+                                        </small>
+
+                                    </div>
+
+                                    @if ($router->action === 'connected')
+
+                                        <span class="badge bg-success">
+                                            Connected
+                                        </span>
+
+                                    @else
+
+                                        <span class="badge bg-secondary">
+                                            Disconnected
+                                        </span>
+
+                                    @endif
+
+                                </div>
+
+                                <div class="card-body">
+
+                                    <div class="row g-2">
+
+                                        <div class="col-6">
+
+                                            <small class="text-muted d-block">
+                                                Customers
+                                            </small>
+
+                                            <strong>
+                                                {{ $customerCount }}
+                                            </strong>
+
+                                        </div>
+
+                                        <div class="col-6">
+
+                                            <small class="text-muted d-block">
+                                                API Port
+                                            </small>
+
+                                            <strong>
+                                                {{ $router->api_port ?? '-' }}
+                                            </strong>
+
+                                        </div>
+
+                                        <div class="col-6 mt-3">
+
+                                            <small class="text-muted d-block">
+                                                SSH Port
+                                            </small>
+
+                                            <strong>
+                                                {{ $router->ssh_port ?? '-' }}
+                                            </strong>
+
+                                        </div>
+
+                                        <div class="col-6 mt-3">
+
+                                            <small class="text-muted d-block">
+                                                Username
+                                            </small>
+
+                                            <strong class="text-truncate d-block">
+                                                {{ $router->username }}
+                                            </strong>
+
+                                        </div>
+
+                                    </div>
+
+                                </div>
+
+                                <div class="card-footer bg-transparent">
+
+                                    <a
+                                        href="{{ route('mikrotik-sync') }}"
+                                        class="btn btn-sm btn-outline-primary w-100"
+                                    >
+                                        Manage Router
+                                    </a>
+
+                                </div>
+
+                            </div>
+
+                        </div>
+
+                    @endforeach
+
+                </div>
+
+            </div>
+
+        </div>
+
+
+        {{-- =========================================================
+            BILLING + NETWORK SECTION
+        ========================================================== --}}
+        <div class="row g-3">
+
+            {{-- Billing --}}
+            <div class="col-12 col-xl-6">
+
+                <div class="card h-100">
+
+                    <div class="card-header">
+
+                        <h5 class="mb-0">
+                            Billing Overview
+                        </h5>
+
+                    </div>
+
+                    <div class="card-body">
+
+                        <div class="row g-3">
+
+                            <div class="col-6">
+
+                                <div class="p-3 bg-light rounded">
+
+                                    <small class="text-muted d-block">
+                                        Paid
+                                    </small>
+
+                                    <h4 class="mb-0 text-success">
+                                        ৳{{ number_format(
+                                            \App\Models\BillingInfo::sum('paid_amount'),
+                                            2
+                                        ) }}
+                                    </h4>
+
+                                </div>
+
+                            </div>
+
+                            <div class="col-6">
+
+                                <div class="p-3 bg-light rounded">
+
+                                    <small class="text-muted d-block">
+                                        Due
+                                    </small>
+
+                                    <h4 class="mb-0 text-danger">
+                                        ৳{{ number_format(
+                                            \App\Models\BillingInfo::sum('total_due_amount'),
+                                            2
+                                        ) }}
+                                    </h4>
+
+                                </div>
+
+                            </div>
+
+                        </div>
+
+                        <div class="mt-4">
+
+                            <a
+                                href="{{ route('collection-report.index') }}"
+                                class="btn btn-sm btn-primary"
+                            >
+                                View Collection Report
+                            </a>
+
+                            <a
+                                href="{{ route('payment-invoice') }}"
+                                class="btn btn-sm btn-outline-primary"
+                            >
+                                Invoices
+                            </a>
+
+                        </div>
+
+                    </div>
+
+                </div>
+
+            </div>
+
+
+            {{-- Network --}}
+            <div class="col-12 col-xl-6">
+
+                <div class="card h-100">
+
+                    <div class="card-header">
+
+                        <h5 class="mb-0">
+                            Network Overview
+                        </h5>
+
+                    </div>
+
+                    <div class="card-body">
+
+                        <div class="row g-3">
+
+                            <div class="col-6">
+
+                                <div class="p-3 bg-light rounded">
+
+                                    <small class="text-muted d-block">
+                                        Active PPP Users
+                                    </small>
+
+                                    <h4 class="mb-0">
+                                        {{ \App\Models\PPPSecrets::where('status', 'active')->count() }}
+                                    </h4>
+
+                                </div>
+
+                            </div>
+
+                            <div class="col-6">
+
+                                <div class="p-3 bg-light rounded">
+
+                                    <small class="text-muted d-block">
+                                        Routers Online
+                                    </small>
+
+                                    <h4 class="mb-0 text-success">
+                                        {{ \App\Models\RouterList::where('action', 'connected')->count() }}
+                                    </h4>
+
+                                </div>
+
+                            </div>
+
+                        </div>
+
+                        <div class="mt-4">
+
+                            <a
+                                href="{{ route('mikrotik-sync') }}"
+                                class="btn btn-sm btn-primary"
+                            >
+                                MikroTik Management
+                            </a>
+
+                        </div>
+
+                    </div>
+
+                </div>
+
+            </div>
+
+        </div>
+
+    </div>
+
+</x-filament-panels::page>
