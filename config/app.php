@@ -13,4 +13,4 @@ return [
     |
     */
 
-    'name' => env('APP_NAME', 'SKYTECH INFRANET ISP Billing'),
+    'name' => env('APP_NAME', 'SONGOROKA SKYTECH INFRANET ISP Billing'),
