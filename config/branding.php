@@ -1,7 +1,7 @@
 <?php
 
 return [
-    'name' => env('APP_NAME', 'SKYTECH INFRANET'),
+    'name' => env('APP_NAME', 'SONGOROKA SKYTECH INFRANET'),
     'founder' => env('APP_FOUNDER', 'Adam Kessi Adam'),
     'country' => env('APP_COUNTRY', 'Tanzania'),
     'currency' => env('APP_CURRENCY', 'TZS'),
