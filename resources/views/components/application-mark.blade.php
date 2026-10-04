@@ -6,10 +6,10 @@
 @else
     @if (siteUrlSettings('site_icon'))
         <img class="me-2" src="{{ site_image(siteUrlSettings('site_icon')) }}" alt="" width="40" />
-        <span class="font-sans-serif text-success d-block">{{ siteUrlSettings('site_name') ?? 'SKYTECH INFRANET' }}</span>
+        <span class="font-sans-serif text-success d-block">{{ siteUrlSettings('site_name') ?? 'SONGOROKA SKYTECH INFRANET' }}</span>
         <small class="d-block text-muted fw-semibold">ISP Billing</small>
     @else
-        <span class="font-sans-serif text-success d-block">{{ siteUrlSettings('site_name') ?? 'SKYTECH INFRANET' }}</span>
+        <span class="font-sans-serif text-success d-block">{{ siteUrlSettings('site_name') ?? 'SONGOROKA SKYTECH INFRANET' }}</span>
         <small class="d-block text-muted fw-semibold">ISP Billing</small>
     @endif
 @endif
