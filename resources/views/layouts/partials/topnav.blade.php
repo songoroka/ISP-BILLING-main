@@ -11,9 +11,15 @@
             @else
                 @if (siteUrlSettings('site_icon'))
                     <img class="me-2" src="{{ site_image(siteUrlSettings('site_icon')) }}" alt="" width="40" />
-                    <span class="font-sans-serif text-success">{{ siteUrlSettings('site_name') ?? 'SKYTECH INFRANET' }}</span>
+                    <div class="d-flex flex-column align-items-start">
+                        <span class="font-sans-serif text-success">{{ siteUrlSettings('site_name') ?? 'SONGOROKA SKYTECH INFRANET' }}</span>
+                        <small class="text-muted fw-semibold">ISP Billing</small>
+                    </div>
                 @else
-                    <span class="font-sans-serif text-success">{{ siteUrlSettings('site_name') ?? 'SKYTECH INFRANET' }}</span>
+                    <div class="d-flex flex-column align-items-start">
+                        <span class="font-sans-serif text-success">{{ siteUrlSettings('site_name') ?? 'SONGOROKA SKYTECH INFRANET' }}</span>
+                        <small class="text-muted fw-semibold">ISP Billing</small>
+                    </div>
                 @endif
             @endif
         </div>
@@ -37,9 +43,15 @@
             @else
                 @if (siteUrlSettings('site_icon'))
                     <img class="me-2" src="{{ site_image(siteUrlSettings('site_icon')) }}" alt="" width="40" />
-                    <span class="font-sans-serif text-success">{{ siteUrlSettings('site_name') ?? 'SKYTECH INFRANET' }}</span>
+                    <div class="d-flex flex-column align-items-start">
+                        <span class="font-sans-serif text-success">{{ siteUrlSettings('site_name') ?? 'SONGOROKA SKYTECH INFRANET' }}</span>
+                        <small class="text-muted fw-semibold">ISP Billing</small>
+                    </div>
                 @else
-                    <span class="font-sans-serif text-success">{{ siteUrlSettings('site_name') ?? 'SKYTECH INFRANET' }}</span>
+                    <div class="d-flex flex-column align-items-start">
+                        <span class="font-sans-serif text-success">{{ siteUrlSettings('site_name') ?? 'SONGOROKA SKYTECH INFRANET' }}</span>
+                        <small class="text-muted fw-semibold">ISP Billing</small>
+                    </div>
                 @endif
             @endif
         </div>
